@@ -3,6 +3,7 @@ import platform
 import os
 import torch
 import numpy as np
+import json
 
 from modules.fast_sam import FastSamAutomaticMaskGenerator, fast_sam_model_registry
 from modules.mobile_sam import SamAutomaticMaskGenerator as SamAutomaticMaskGeneratorMobile
@@ -66,7 +67,7 @@ class Segmentor():
 
         pred_iou_thresh = 0.88 if not anime_style_chk else 0.83
         stability_score_thresh = 0.95 if not anime_style_chk else 0.9
-        import pudb; pu.db
+
         if os.path.isfile(sam_checkpoint):
             sam = sam_model_registry_local[model_type](checkpoint=sam_checkpoint)
             if platform.system() == "Darwin":
@@ -83,3 +84,24 @@ class Segmentor():
             sam_mask_generator = None
 
         return sam_mask_generator
+
+    def resize_image_with_height(self, pil_image, new_height):
+        # Calculate the aspect ratio
+        width, height = pil_image.size
+        aspect_ratio = width / height
+
+        # Calculate the new width based on the aspect ratio
+        new_width = int(new_height * aspect_ratio)
+
+        # Resize the image while preserving the aspect ratio
+        resized_image = pil_image.resize((new_width, new_height))
+
+        # Return the resized image
+        return resized_image
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return json.JSONEncoder.default(self, obj)
+
