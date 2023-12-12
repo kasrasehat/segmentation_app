@@ -199,40 +199,39 @@ async def compute_sam(object_name: str,
     inference using the provided prompt, saves the processed image, and uploads it to the specified output bucket.
     If debug_mode is enabled, it returns a streaming response of the processed image for debugging purposes.
     """
-    # try:
-    args.miniosecure = bool(os.getenv(f'{env}_MINIO_SECURE'))
-    args.miniouser = os.getenv(f'{env}_MINIO_ACCESS_KEY')
-    args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
-    args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
+    try:
+        args.miniosecure = bool(os.getenv(f'{env}_MINIO_SECURE'))
+        args.miniouser = os.getenv(f'{env}_MINIO_ACCESS_KEY')
+        args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
+        args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
 
-    args.minioserver = "192.168.32.33:9000"
-    args.miniouser = "test_user_chohfahe7e"
-    args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
-    args.miniosecure = False
+        args.minioserver = "192.168.32.33:9000"
+        args.miniouser = "test_user_chohfahe7e"
+        args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
+        args.miniosecure = False
 
-    client = setup_minio(args)
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-                None,
-                runner,
-                object_name,
-                res_mode,
-                debug_mode, 
-                beforebucket,
-                afterbucket,
-                client,
-                after_name
-                )
+        client = setup_minio(args)
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+                    None,
+                    runner,
+                    object_name,
+                    res_mode,
+                    debug_mode, 
+                    beforebucket,
+                    afterbucket,
+                    client,
+                    after_name
+                    )
 
-    logging.info("\tINFO: POST /compute_sam HTTP/1.1 200 OK")
+        logging.info("\tINFO: POST /compute_sam HTTP/1.1 200 OK")
 
-        # if debug_mode:
-    return response
+        return response
 
-    # except Exception as e:
-    #     torch.cuda.empty_cache()
-    #     logging.error(f'\tERROR: /compute_sam HTTP:/500, {e}')
-    #     raise HTTPException(status_code=500, detail="Internal Server Error")
+    except Exception as e:
+        torch.cuda.empty_cache()
+        logging.error(f'\tERROR: /compute_sam HTTP:/500, {e}')
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 def setup_file_logging(file_path, log_level=logging.INFO) -> None:
     """
