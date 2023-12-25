@@ -1,43 +1,38 @@
 import os
-import time
-import io
-import torch
 import argparse
-import logging
-import uvicorn
 import datetime
+from io import BytesIO
 import asyncio
+import logging
 import gc
-import json
+from time import time
 
-import PIL
-from PIL import Image, ImageOps
-from fastapi import FastAPI, Form
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import HTTPException, Response, UploadFile
+from fastapi import FastAPI, UploadFile, File
 import torch
+import uvicorn
 import numpy as np
+import cv2
+from PIL import Image
+from fastapi import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from detectron2.config import get_cfg
+from detectron2.projects.deeplab import add_deeplab_config
+from detectron2.data import MetadataCatalog
 
-from modules.segmentation import Segmentor, NumpyEncoder
+from demo.defaults import DefaultPredictor
+from demo.visualizer import Visualizer, ColorMode
+from utils import *
+from oneformer import (
+    add_oneformer_config,
+    add_common_config,
+    add_swin_config,
+    add_dinat_config,
+)
 
 
-PIL.Image.MAX_IMAGE_PIXELS = 933120000
+app = FastAPI()
 
-resolution = {
-    'tiny': 256,
-    'low': 512,
-    'medium': 768,
-    'high': 1024
-}
-
-app = FastAPI()  # cal this object by uvicorn api
-
-origins = [
-    # "http://192.168.1.39:1025"
-    # "http://localhost",
-    # "http://localhost:1025",
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,11 +42,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def setup_minio(args):
+    from minio import Minio
 
-@torch.inference_mode()
-def inference(img_org):
-    seg_image, sam_dict = segmentor.run_sam(img_org, segmentor, anime_style_chk=False)
-    return seg_image, sam_dict
+    min_client = Minio(
+        args.minioserver,
+        access_key=args.miniouser,
+        secret_key=args.miniopass,
+        secure=args.miniosecure  # Set to False if using an insecure connection (e.g., for local development)
+    )
+    return min_client
 
 
 def test_gpu_cuda():
@@ -62,69 +62,105 @@ def test_gpu_cuda():
     logging.info('\tdevice: %s', torch.cuda.device(0))
     logging.info('\tdevice name: %s', torch.cuda.get_device_name())
 
-def get_image(bucket_name, object_name, local_file_path, client):
-    client.fget_object(bucket_name, object_name, local_file_path)
-    logging.info(f"\timage downloaded: {local_file_path}")
+
+def resize_image_with_height(pil_image, new_height):
+    # Calculate the aspect ratio
+    width, height = pil_image.size
+    aspect_ratio = width / height
+
+    # Calculate the new width based on the aspect ratio
+    new_width = int(new_height * aspect_ratio)
+
+    # Resize the image while preserving the aspect ratio
+    resized_image = pil_image.resize((new_width, new_height))
+
+    # Return the resized image
+    return resized_image
+
 
 def put_image(bucket_name, object_name, local_file_path, client):
     client.fput_object(bucket_name, object_name, local_file_path)
     logging.info(f"\timage uploaded: {object_name}")
 
-def read_image(object_name, timestamp, beforebucket, client):
-    file_name, file_extension = os.path.splitext(object_name)
 
-    temp_save_before_path = f'./{file_name}-{timestamp}'
-    local_before_path = temp_save_before_path + file_extension
-
-    get_image(beforebucket, object_name, local_before_path, client)
-
-    img = Image.open(local_before_path).convert("RGB")
-    img = ImageOps.exif_transpose(img)
-
-    return img, local_before_path
-
-def runner(file, res_mode: str, debug_mode: bool):
+def panoptic_run(img, predictor, metadata):
+    visualizer = Visualizer(img[:, :, ::-1], metadata=metadata, instance_mode=ColorMode.IMAGE)
+    predictions = predictor(img, "panoptic")
+    panoptic_seg, segments_info = predictions["panoptic_seg"]
     
-    image_data = file.file.read()
-    img = Image.open(io.BytesIO(image_data))
+    masks, sinfo, labels = visualizer.draw_panoptic_seg_predictions(
+        panoptic_seg.to('cpu'), segments_info, alpha=0.5
+    )
+    return masks, sinfo, labels
 
-    segmentor.resize_image_with_height(img, resolution[res_mode])
-    logging.info(f'\timage shape: {img.size}', )
-    logging.info(f'\tstart inference')
-    logging.info(f'\tresolution mode: {res_mode}')
-    start = time.time()
 
-    new_img, sam_dict = inference(np.array(img))
-    
-    end = time.time()
+def setup_cfg(dataset, backbone):
+    # load config from file and command-line arguments
+    cfg = get_cfg()
+    add_deeplab_config(cfg)
+    add_common_config(cfg)
+    add_swin_config(cfg)
+    add_oneformer_config(cfg)
+    add_dinat_config(cfg)
+    dataset = "ade20k"
+    cfg_path = CFG_DICT[backbone][dataset]
+    cfg.merge_from_file(cfg_path)
+    if torch.cuda.is_available():
+        cfg.MODEL.DEVICE = 'cuda'
+    else:
+        cfg.MODEL.DEVICE = 'cpu'
+    cfg.MODEL.WEIGHTS = MODEL_DICT[backbone][dataset]
+    cfg.freeze()
+    return cfg
 
-    logging.info(f'\tdone, time: {round(end - start, 4)}')
 
+def segment_image_runner(
+            image_id,
+            res_mode,
+            image_file,
+            afterbucket,
+            client):
+    # Load the image
+    image_org = Image.open(BytesIO(image_file.file.read())).convert("RGB")
+    w_org , h_org = image_org.size
+    image = resize_image_with_height(image_org, int(res_mode))
+    w_resize, h_resize = image.size
+    image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    masks, sinfo, labels = panoptic_run(image, predictor, metadata)
+
+    response = []
+    for i, (mask, info, label) in enumerate(zip(masks, sinfo, labels)):
+
+        mask = np.where(mask,255,0)
+        coordinates = np.argwhere(mask == 255)
+        center_y, center_x = coordinates[len(coordinates)//2]
+        response.append({
+            "id":str(i),
+            "title": label,
+            "point": {
+                "x": center_x*100/w_resize,
+                "y": center_y*100/h_resize}
+            })
+
+        local_after_path = f"{image_id}_mask_{str(i)}.png"
+        local_after_path = os.path.basename(local_after_path)
+        cv2.imwrite(f"{image_id}_mask_{str(i)}.png", mask)
+        put_image(afterbucket, local_after_path, local_after_path, client)
+        os.remove(local_after_path)
+        
     torch.cuda.empty_cache()
     gc.collect()
 
-
-    output_dict = {}
-    for item in sam_dict['sam_masks']:
-        true_coords = np.argwhere(item['segmentation'])
-        area_number = item['area']
-        output_dict[area_number] = true_coords.tolist()
-        # arr_bytes = true_coords.tobytes()
-        # arr_base64 = base64.b64encode(arr_bytes)
-        # output_dict[area_number] = arr_base64
-
-    json_dump = json.dumps(output_dict, cls=NumpyEncoder)
-    return json_dump
+    return response
 
 
-@app.post("/compute_sam/")
-async def compute_sam(file: UploadFile,
-                      res_mode: str = 'high', 
-                      debug_mode: bool = False,
-                      env: str = ''
-        ):
+
+@app.post("/segment_image")
+async def sagment_image(image_file: UploadFile = File(...), image_id: str = '',
+                        res_mode: str = 'low', afterbucket: str = '',
+                        debug_mode: bool = False, env: str = '', after_name: str = ''):
     """
-        Perform computation and controlnet processing for an image.
+        Perform computation and instruct pix2pix processing for an image.
 
     Parameters:
     - **object_name** (str): The name of the image object.
@@ -144,86 +180,96 @@ async def compute_sam(file: UploadFile,
     This function follows the controlnet processing workflow for an image. It retrieves the image file, performs
     inference using the provided prompt, saves the processed image, and uploads it to the specified output bucket.
     If debug_mode is enabled, it returns a streaming response of the processed image for debugging purposes.
+
     """
+
     try:
+        args.miniosecure = bool(os.getenv(f'{env}_MINIO_SECURE'))
+        args.miniouser = os.getenv(f'{env}_MINIO_ACCESS_KEY')
+        args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
+        args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
 
+        args.minioserver = "192.168.32.33:9000"
+        args.miniouser = "test_user_chohfahe7e"
+        args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
+        args.miniosecure = False       
+
+        client = setup_minio(args)
         loop = asyncio.get_event_loop()
+        tic = time()
         response = await loop.run_in_executor(
-                    None,
-                    runner,
-                    file,
-                    res_mode,
-                    debug_mode, 
-                    )
+                None,
+                segment_image_runner,
+                image_id,
+                res_mode,
+                image_file,
+                afterbucket,
+                client
+                )
+        logging.info(f"time: {time()-tic}")
 
-        logging.info("\tINFO: POST /compute_sam HTTP/1.1 200 OK")
+        logging.info("POST /compute_segment HTTP/1.1 200 OK")
 
-        return response 
+        if debug_mode:
+            return response
 
     except Exception as e:
         torch.cuda.empty_cache()
-        logging.error(f'\tERROR: /compute_sam HTTP:/500, {e}')
+        logging.error(f'/compute_segment HTTP:/500, {e}')
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-def setup_file_logging(file_path, log_level=logging.INFO) -> None:
-    """
-    setup file logging
-    """
+
+
+def setup_file_logging(file_path, log_level=logging.INFO):
     # Set up logging
-    logging.basicConfig(level=log_level, format='%(message)s')
+    logging.basicConfig(level=log_level)
 
-    # # Create a file handler and set its level to the desired logging level
-    # file_handler = logging.FileHandler(file_path)
-    # file_handler.setLevel(log_level)
-
-    # # Create a logging formatter
-    # formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-    # # Set the formatter for the file handler
-    # file_handler.setFormatter(formatter)
-
-    # # Add the file handler to the root logger
-    # logging.getLogger('').addHandler(file_handler)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Setup an controlnet API for ID service.")
+    parser = argparse.ArgumentParser(description="Setup a segmentation service.")
 
     parser.add_argument("--server", '-s', type=str, help="Host ip address.")
     parser.add_argument("-port", "-p", type=int, help="Port number.")
-    parser.add_argument(
-        "--checkpoint_name", "-c", help="checkpoint name.",
-        required=False)
-
-    parser.add_argument(
-        "--enable_model_cpu_offload", "-e", help="Enable Model CPU Offload",
-        action="store_true",
-        default=True,
-        required=False)
 
     args = parser.parse_args()
 
     # args.server = "localhost"
-    # args.port = 1025
+    # args.port = 1024
     
-    # args.checkpoint = "/home/mzeinali/projects/models/id/sdxl-v1.0-base-canny/"
-    # args.checkpoint_oneformer = "/home/mzeinali/projects/models/oneformer"
-
-    # args.enable_model_cpu_offload = True
+    # args.checkpoint = "/home/mzeinali/projects/instructpix2pix/2023-07-18__00-10-39/diffusers_checkpoint"
+    
+    args.minioserver = "192.168.32.33:9000"
+    args.miniouser = "test_user_chohfahe7e"
+    args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
+    
+    # args.beforebucket = "test00before"
+    # args.afterbucket = "test00after"
 
     # prepare logging
     timestamp_log = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S')
-    setup_file_logging(f'log_id_{timestamp_log}.txt', logging.INFO)
+    setup_file_logging(f'log_segment_{timestamp_log}.txt', logging.INFO)
 
     test_gpu_cuda()
 
     # global client
     # client = setup_minio(args)
 
-    global segmentor
+    # Loading a single model for all three tasks
+    global model, processor, device, predictor, metadata, dataset
 
-    sam_checkpoint = '../../models/sam_vit_h_4b8939.pth'
-    segmentor = Segmentor(sam_checkpoint, 'cuda')
-    logging.info('\model segmentation is loaded.')
+    backbone = "Swin-L"
+    dataset = "ADE20K (150 classes)"
+    cfg = setup_cfg(dataset, backbone)
+    metadata = MetadataCatalog.get(
+    cfg.DATASETS.TEST_PANOPTIC[0] if len(cfg.DATASETS.TEST_PANOPTIC) else "__unused"
+    )
+    PREDICTORS[backbone][dataset] = DefaultPredictor(cfg)
+    METADATA[backbone][dataset] = metadata
+    predictor = PREDICTORS[backbone][dataset]
+    print(predictor)
+    metadata = METADATA[backbone][dataset]
+    # Check if CUDA is available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    uvicorn.run(app, host=args.server, port=args.port)
+    uvicorn.run(app, host='0.0.0.0', port=1234)
