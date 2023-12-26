@@ -6,6 +6,7 @@ import asyncio
 import logging
 import gc
 from time import time
+import json
 
 from fastapi import FastAPI, UploadFile, File
 import torch
@@ -116,7 +117,6 @@ def setup_cfg(dataset, backbone):
     cfg.freeze()
     return cfg
 
-
 def segment_image_runner(
             image_id,
             res_mode,
@@ -162,15 +162,18 @@ def mask_image_runner(
             beforebucket,
             afterbucket,
             selected_objects_id,
-            selected_objects_label,
+            segmented_response,
             client):
 
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S.%f')
     logging.info(timestamp)
 
+    segmented_response = json.loads(segmented_response)
     mask_images = []
-    for selected_object_id, selected_object_label in zip(selected_objects_id.split(','), selected_objects_label.split(',')):
-        local_before_path = image_id + '_' + selected_object_id + '_' + selected_object_label + '_mask.png'
+    for selected_object_id in selected_objects_id.split(','):
+
+        selected_object_label = [item["title"] for item in segmented_response if item["id"] == selected_object_id]
+        local_before_path = image_id + '_' + selected_object_id + '_' + selected_object_label[0] + '_mask.png'
         get_image(beforebucket, local_before_path, local_before_path, client)
         mask_images.append(cv2.imread(local_before_path))
         os.remove(local_before_path)
@@ -182,7 +185,7 @@ def mask_image_runner(
     
     print(unified_mask.shape)
     unified_mask = unified_mask.astype(np.uint8) * 255
-    local_after_path = f"{image_id}_mask_seletected_{selected_objects_id}_{selected_objects_label}.png"
+    local_after_path = f"{image_id}_mask_seletected_{selected_objects_id}.png"
     local_after_path = os.path.basename(local_after_path)
     print(local_after_path)
 
@@ -200,7 +203,7 @@ def mask_image_runner(
 @app.post("/mask_image")
 async def mask_image(image_id: str = '', beforebucket: str = '',
                      afterbucket: str = '', debug_mode: bool = False, 
-                     selected_objects_id: str = '', selected_objects_label: str = '',
+                     selected_objects_id: str = '', segmented_dict: str = '',
                      env: str = ''):
     """
         Perform computation and instruct pix2pix processing for an image.
@@ -247,7 +250,7 @@ async def mask_image(image_id: str = '', beforebucket: str = '',
                 beforebucket,
                 afterbucket,
                 selected_objects_id,
-                selected_objects_label,
+                segmented_dict,
                 client
                 )
         logging.info(f"time: {time()-tic}")
