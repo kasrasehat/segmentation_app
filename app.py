@@ -82,6 +82,9 @@ def put_image(bucket_name, object_name, local_file_path, client):
     client.fput_object(bucket_name, object_name, local_file_path)
     logging.info(f"\timage uploaded: {object_name}")
 
+def get_image(bucket_name, object_name, local_file_path, client):
+    client.fget_object(bucket_name, object_name, local_file_path)
+    logging.info(f"\timage downloaded: {local_file_path}")
 
 def panoptic_run(img, predictor, metadata):
     visualizer = Visualizer(img[:, :, ::-1], metadata=metadata, instance_mode=ColorMode.IMAGE)
@@ -142,9 +145,9 @@ def segment_image_runner(
                 "y": center_y*100/h_resize}
             })
 
-        local_after_path = f"{image_id}_mask_{str(i)}.png"
+        local_after_path = f"{image_id}_{str(i)}_{label}_mask.png"
         local_after_path = os.path.basename(local_after_path)
-        cv2.imwrite(f"{image_id}_mask_{str(i)}.png", mask)
+        cv2.imwrite(local_after_path, mask)
         put_image(afterbucket, local_after_path, local_after_path, client)
         os.remove(local_after_path)
         
@@ -152,6 +155,112 @@ def segment_image_runner(
     gc.collect()
 
     return response
+
+
+def mask_image_runner(
+            image_id,
+            beforebucket,
+            afterbucket,
+            selected_objects_id,
+            selected_objects_label,
+            client):
+
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S.%f')
+    logging.info(timestamp)
+
+    mask_images = []
+    for selected_object_id, selected_object_label in zip(selected_objects_id.split(','), selected_objects_label.split(',')):
+        local_before_path = image_id + '_' + selected_object_id + '_' + selected_object_label + '_mask.png'
+        get_image(beforebucket, local_before_path, local_before_path, client)
+        mask_images.append(cv2.imread(local_before_path))
+        os.remove(local_before_path)
+
+    unified_mask = mask_images[0]
+
+    for mask in mask_images[1:]:
+        unified_mask = np.logical_or(unified_mask, mask)
+    
+    print(unified_mask.shape)
+    unified_mask = unified_mask.astype(np.uint8) * 255
+    local_after_path = f"{image_id}_mask_seletected_{selected_objects_id}_{selected_objects_label}.png"
+    local_after_path = os.path.basename(local_after_path)
+    print(local_after_path)
+
+    cv2.imwrite(local_after_path, unified_mask)
+    put_image(afterbucket, local_after_path, local_after_path, client)
+    os.remove(local_after_path)
+        
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    return local_after_path
+
+
+
+@app.post("/mask_image")
+async def mask_image(image_id: str = '', beforebucket: str = '',
+                     afterbucket: str = '', debug_mode: bool = False, 
+                     selected_objects_id: str = '', selected_objects_label: str = '',
+                     env: str = ''):
+    """
+        Perform computation and instruct pix2pix processing for an image.
+
+    Parameters:
+    - **object_name** (str): The name of the image object.
+    - **prompt** (str): The prompt to use for the controlnet processing.
+    - **res_mode** (str): The resolution mode, tiny: 256, low: 512, medium: 768, high: 1024.
+    - **debug_mode** (bool, optional): If True, returns a streaming response of the processed image for debugging purposes.
+        Defaults to False.
+
+    Returns:
+    - Optional[StreamingResponse]: If debug_mode is True, returns a streaming response containing the processed image.
+        Otherwise, returns None.
+
+    Raises:
+    - Any exceptions raised during image processing or file operations will be propagated.
+
+    **Note:**
+    This function follows the controlnet processing workflow for an image. It retrieves the image file, performs
+    inference using the provided prompt, saves the processed image, and uploads it to the specified output bucket.
+    If debug_mode is enabled, it returns a streaming response of the processed image for debugging purposes.
+
+    """
+
+    try:
+        args.miniosecure = bool(os.getenv(f'{env}_MINIO_SECURE'))
+        args.miniouser = os.getenv(f'{env}_MINIO_ACCESS_KEY')
+        args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
+        args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
+
+        args.minioserver = "192.168.32.33:9000"
+        args.miniouser = "test_user_chohfahe7e"
+        args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
+        args.miniosecure = False       
+
+        client = setup_minio(args)
+        loop = asyncio.get_event_loop()
+        tic = time()
+        response = await loop.run_in_executor(
+                None,
+                mask_image_runner,
+                image_id,
+                beforebucket,
+                afterbucket,
+                selected_objects_id,
+                selected_objects_label,
+                client
+                )
+        logging.info(f"time: {time()-tic}")
+
+        logging.info("POST /compute_mask HTTP/1.1 200 OK")
+
+        if debug_mode:
+            return response
+
+    except Exception as e:
+        torch.cuda.empty_cache()
+        logging.error(f'/compute_mask HTTP:/500, {e}')
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 
