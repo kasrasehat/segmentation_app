@@ -6,7 +6,6 @@ import asyncio
 import logging
 import gc
 from time import time
-import json
 
 from fastapi import FastAPI, UploadFile, File
 import torch
@@ -54,7 +53,6 @@ def setup_minio(args):
     )
     return min_client
 
-
 def test_gpu_cuda():
     logging.info('test gpu and cuda:')
     logging.info('\tcuda is available: %s', torch.cuda.is_available())
@@ -62,7 +60,6 @@ def test_gpu_cuda():
     logging.info('\tcurrent device: %s', torch.cuda.current_device())
     logging.info('\tdevice: %s', torch.cuda.device(0))
     logging.info('\tdevice name: %s', torch.cuda.get_device_name())
-
 
 def resize_image_with_height(pil_image, new_height):
     # Calculate the aspect ratio
@@ -78,14 +75,13 @@ def resize_image_with_height(pil_image, new_height):
     # Return the resized image
     return resized_image
 
-
 def put_image(bucket_name, object_name, local_file_path, client):
     client.fput_object(bucket_name, object_name, local_file_path)
-    logging.info(f"\timage uploaded: {object_name}")
+    # logging.info(f"\timage uploaded: {object_name}")
 
 def get_image(bucket_name, object_name, local_file_path, client):
     client.fget_object(bucket_name, object_name, local_file_path)
-    logging.info(f"\timage downloaded: {local_file_path}")
+    # logging.info(f"\timage downloaded: {local_file_path}")
 
 def panoptic_run(img, predictor, metadata):
     visualizer = Visualizer(img[:, :, ::-1], metadata=metadata, instance_mode=ColorMode.IMAGE)
@@ -96,7 +92,6 @@ def panoptic_run(img, predictor, metadata):
         panoptic_seg.to('cpu'), segments_info, alpha=0.5
     )
     return masks, sinfo, labels
-
 
 def setup_cfg(dataset, backbone):
     # load config from file and command-line arguments
@@ -118,13 +113,26 @@ def setup_cfg(dataset, backbone):
     return cfg
 
 def segment_image_runner(
+            object_name,
             image_id,
             res_mode,
-            image_file,
+            beforebucket,
             afterbucket,
             client):
     # Load the image
-    image_org = Image.open(BytesIO(image_file.file.read())).convert("RGB")
+    # image_org = Image.open(BytesIO(image_file.file.read())).convert("RGB")
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S.%f')
+    logging.info(timestamp)
+
+    torch.cuda.empty_cache()
+    file_name, file_extension = os.path.splitext(object_name)
+
+    temp_save_before_path = f'./{file_name}-{timestamp}'
+    local_before_path = temp_save_before_path + file_extension
+
+    get_image(beforebucket, object_name, local_before_path, client)
+
+    image_org = Image.open(local_before_path).convert("RGB")
     w_org , h_org = image_org.size
     image = resize_image_with_height(image_org, int(res_mode))
     w_resize, h_resize = image.size
@@ -137,6 +145,7 @@ def segment_image_runner(
         mask = np.where(mask,255,0)
         coordinates = np.argwhere(mask == 255)
         center_y, center_x = coordinates[len(coordinates)//2]
+        label = label.strip()
         response.append({
             "id":str(i),
             "title": label,
@@ -144,18 +153,18 @@ def segment_image_runner(
                 "x": center_x*100/w_resize,
                 "y": center_y*100/h_resize}
             })
-
+        
         local_after_path = f"{image_id}_{str(i)}_{label}_mask.png"
         local_after_path = os.path.basename(local_after_path)
         cv2.imwrite(local_after_path, mask)
         put_image(afterbucket, local_after_path, local_after_path, client)
         os.remove(local_after_path)
-        
+
+    os.remove(local_before_path)    
     torch.cuda.empty_cache()
     gc.collect()
 
     return response
-
 
 def mask_image_runner(
             image_id,
@@ -169,8 +178,9 @@ def mask_image_runner(
     logging.info(timestamp)
 
     mask_images = []
-    for selected_object_id, selected_object_label in zip(selected_objects_id.split(','), selected_objects_labels.split('$')):
 
+    for selected_object_id, selected_object_label in zip(selected_objects_id.split(','), selected_objects_labels.split('$')):
+        selected_object_label = selected_object_label.strip()
         local_before_path = image_id + '_' + selected_object_id + '_' + selected_object_label + '_mask.png'
         get_image(beforebucket, local_before_path, local_before_path, client)
         mask_images.append(cv2.imread(local_before_path))
@@ -181,11 +191,9 @@ def mask_image_runner(
     for mask in mask_images[1:]:
         unified_mask = np.logical_or(unified_mask, mask)
     
-    print(unified_mask.shape)
     unified_mask = unified_mask.astype(np.uint8) * 255
     local_after_path = f"{image_id}_mask_seletected_{selected_objects_id}_{selected_objects_labels}.png"
     local_after_path = os.path.basename(local_after_path)
-    print(local_after_path)
 
     cv2.imwrite(local_after_path, unified_mask)
     put_image(afterbucket, local_after_path, local_after_path, client)
@@ -195,7 +203,6 @@ def mask_image_runner(
     gc.collect()
 
     return local_after_path
-
 
 
 @app.post("/mask_image")
@@ -251,7 +258,7 @@ async def mask_image(image_id: str = '', beforebucket: str = '',
                 selected_objects_labels,
                 client
                 )
-        logging.info(f"time: {time()-tic}")
+        logging.info(f"time: {time()-tic}") 
 
         logging.info("POST /compute_mask HTTP/1.1 200 OK")
 
@@ -264,10 +271,9 @@ async def mask_image(image_id: str = '', beforebucket: str = '',
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-
 @app.post("/segment_image")
-async def sagment_image(image_file: UploadFile = File(...), image_id: str = '',
-                        res_mode: str = 'low', afterbucket: str = '',
+async def sagment_image(object_name: str = '', image_id: str = '',
+                        res_mode: str = '1024', before_bucket: str = '', afterbucket: str = '',
                         debug_mode: bool = False, env: str = '', after_name: str = ''):
     """
         Perform computation and instruct pix2pix processing for an image.
@@ -310,9 +316,10 @@ async def sagment_image(image_file: UploadFile = File(...), image_id: str = '',
         response = await loop.run_in_executor(
                 None,
                 segment_image_runner,
+                object_name,
                 image_id,
                 res_mode,
-                image_file,
+                before_bucket,
                 afterbucket,
                 client
                 )
@@ -327,7 +334,6 @@ async def sagment_image(image_file: UploadFile = File(...), image_id: str = '',
         torch.cuda.empty_cache()
         logging.error(f'/compute_segment HTTP:/500, {e}')
         raise HTTPException(status_code=500, detail="Internal Server Error")
-
 
 
 def setup_file_logging(file_path, log_level=logging.INFO):
