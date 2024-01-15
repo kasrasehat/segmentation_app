@@ -6,8 +6,9 @@ import asyncio
 import logging
 import gc
 from time import time
+import json
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI
 import torch
 import uvicorn
 import numpy as np
@@ -101,7 +102,7 @@ def setup_cfg(dataset, backbone):
     add_swin_config(cfg)
     add_oneformer_config(cfg)
     add_dinat_config(cfg)
-    dataset = "ade20k"
+    dataset = "coco"
     cfg_path = CFG_DICT[backbone][dataset]
     cfg.merge_from_file(cfg_path)
     if torch.cuda.is_available():
@@ -114,13 +115,10 @@ def setup_cfg(dataset, backbone):
 
 def segment_image_runner(
             object_name,
-            image_id,
             res_mode,
             beforebucket,
-            afterbucket,
             client):
-    # Load the image
-    # image_org = Image.open(BytesIO(image_file.file.read())).convert("RGB")
+
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S.%f')
     logging.info(timestamp)
 
@@ -139,142 +137,21 @@ def segment_image_runner(
     image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     masks, sinfo, labels = panoptic_run(image, predictor, metadata)
 
-    response = []
-    for i, (mask, info, label) in enumerate(zip(masks, sinfo, labels)):
-
-        mask = np.where(mask,255,0)
-        coordinates = np.argwhere(mask == 255)
-        center_y, center_x = coordinates[len(coordinates)//2]
-        label = label.strip()
-        response.append({
-            "id":str(i),
-            "title": label,
-            "point": {
-                "x": center_x*100/w_resize,
-                "y": center_y*100/h_resize}
-            })
-        
-        local_after_path = f"{image_id}_{str(i)}_{label}_mask.png"
-        local_after_path = os.path.basename(local_after_path)
-        cv2.imwrite(local_after_path, mask)
-        put_image(afterbucket, local_after_path, local_after_path, client)
-        os.remove(local_after_path)
+    point_dict = {}
+    for label, mask in zip(labels, masks):
+        point_dict[label] = get_white_pixel_coordinates(mask)
 
     os.remove(local_before_path)    
     torch.cuda.empty_cache()
     gc.collect()
 
-    return response
-
-def mask_image_runner(
-            image_id,
-            beforebucket,
-            afterbucket,
-            selected_objects_id,
-            selected_objects_labels,
-            client):
-
-    timestamp = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S.%f')
-    logging.info(timestamp)
-
-    mask_images = []
-
-    for selected_object_id, selected_object_label in zip(selected_objects_id.split(','), selected_objects_labels.split('$')):
-        selected_object_label = selected_object_label.strip()
-        local_before_path = image_id + '_' + selected_object_id + '_' + selected_object_label + '_mask.png'
-        get_image(beforebucket, local_before_path, local_before_path, client)
-        mask_images.append(cv2.imread(local_before_path))
-        os.remove(local_before_path)
-
-    unified_mask = mask_images[0]
-
-    for mask in mask_images[1:]:
-        unified_mask = np.logical_or(unified_mask, mask)
-    
-    unified_mask = unified_mask.astype(np.uint8) * 255
-    local_after_path = f"{image_id}_mask_seletected_{selected_objects_id}_{selected_objects_labels}.png"
-    local_after_path = os.path.basename(local_after_path)
-
-    cv2.imwrite(local_after_path, unified_mask)
-    put_image(afterbucket, local_after_path, local_after_path, client)
-    os.remove(local_after_path)
-        
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    return local_after_path
-
-
-@app.post("/mask_image")
-async def mask_image(image_id: str = '', beforebucket: str = '',
-                     afterbucket: str = '', debug_mode: bool = False, 
-                     selected_objects_id: str = '', selected_objects_labels: str = '',
-                     env: str = ''):
-    """
-        Perform computation and instruct pix2pix processing for an image.
-
-    Parameters:
-    - **object_name** (str): The name of the image object.
-    - **prompt** (str): The prompt to use for the controlnet processing.
-    - **res_mode** (str): The resolution mode, tiny: 256, low: 512, medium: 768, high: 1024.
-    - **debug_mode** (bool, optional): If True, returns a streaming response of the processed image for debugging purposes.
-        Defaults to False.
-
-    Returns:
-    - Optional[StreamingResponse]: If debug_mode is True, returns a streaming response containing the processed image.
-        Otherwise, returns None.
-
-    Raises:
-    - Any exceptions raised during image processing or file operations will be propagated.
-
-    **Note:**
-    This function follows the controlnet processing workflow for an image. It retrieves the image file, performs
-    inference using the provided prompt, saves the processed image, and uploads it to the specified output bucket.
-    If debug_mode is enabled, it returns a streaming response of the processed image for debugging purposes.
-
-    """
-
-    try:
-        args.miniosecure = bool(os.getenv(f'{env}_MINIO_SECURE'))
-        args.miniouser = os.getenv(f'{env}_MINIO_ACCESS_KEY')
-        args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
-        args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
-
-        args.minioserver = "192.168.32.33:9000"
-        args.miniouser = "test_user_chohfahe7e"
-        args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
-        args.miniosecure = False       
-
-        client = setup_minio(args)
-        loop = asyncio.get_event_loop()
-        tic = time()
-        response = await loop.run_in_executor(
-                None,
-                mask_image_runner,
-                image_id,
-                beforebucket,
-                afterbucket,
-                selected_objects_id,
-                selected_objects_labels,
-                client
-                )
-        logging.info(f"time: {time()-tic}") 
-
-        logging.info("POST /compute_mask HTTP/1.1 200 OK")
-
-        if debug_mode:
-            return response
-
-    except Exception as e:
-        torch.cuda.empty_cache()
-        logging.error(f'/compute_mask HTTP:/500, {e}')
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    return json.dumps(point_dict, default=str)
 
 
 @app.post("/segment_image")
-async def sagment_image(object_name: str = '', image_id: str = '',
-                        res_mode: str = '1024', before_bucket: str = '', afterbucket: str = '',
-                        debug_mode: bool = False, env: str = '', after_name: str = ''):
+async def sagment_image(object_name: str = '',
+                        res_mode: str = '1024', before_bucket: str = '',
+                        debug_mode: bool = False, env: str = ''):
     """
         Perform computation and instruct pix2pix processing for an image.
 
@@ -317,10 +194,8 @@ async def sagment_image(object_name: str = '', image_id: str = '',
                 None,
                 segment_image_runner,
                 object_name,
-                image_id,
                 res_mode,
                 before_bucket,
-                afterbucket,
                 client
                 )
         logging.info(f"time: {time()-tic}")
@@ -375,7 +250,7 @@ if __name__ == "__main__":
     global model, processor, device, predictor, metadata, dataset
 
     backbone = "Swin-L"
-    dataset = "ADE20K (150 classes)"
+    dataset = "COCO (133 classes)"
     cfg = setup_cfg(dataset, backbone)
     metadata = MetadataCatalog.get(
     cfg.DATASETS.TEST_PANOPTIC[0] if len(cfg.DATASETS.TEST_PANOPTIC) else "__unused"

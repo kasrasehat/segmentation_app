@@ -10,23 +10,22 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 
 
-KEY_DICT = {
-            "ADE20K (150 classes)": "ade20k",}
+KEY_DICT = {"COCO (133 classes)": "coco",}
 
 SWIN_CFG_DICT = {
-            "ade20k": "configs/ade20k/oneformer_swin_large_IN21k_384_bs16_160k.yaml",}
+            "coco": "configs/coco/oneformer_swin_large_IN21k_384_bs16_100ep.yaml"}
 
 SWIN_MODEL_DICT = {
-              "ade20k": hf_hub_download(repo_id="shi-labs/oneformer_ade20k_swin_large", 
-                                            filename="250_16_swin_l_oneformer_ade20k_160k.pth")
+              "coco": hf_hub_download(repo_id="shi-labs/oneformer_coco_swin_large", 
+                                            filename="150_16_swin_l_oneformer_coco_100ep.pth"),
             }
 
 DINAT_CFG_DICT = {
-            "ade20k": "configs/ade20k/oneformer_dinat_large_IN21k_384_bs16_160k.yaml",}
+             "coco": "configs/coco/oneformer_dinat_large_bs16_100ep.yaml",}
 
 DINAT_MODEL_DICT = {
-              "ade20k": hf_hub_download(repo_id="shi-labs/oneformer_ade20k_dinat_large", 
-                                            filename="250_16_dinat_l_oneformer_ade20k_160k.pth")
+              "coco": hf_hub_download(repo_id="shi-labs/oneformer_coco_dinat_large", 
+                                            filename="150_16_dinat_l_oneformer_coco_100ep.pth")
             }
 
 MODEL_DICT = {"DiNAT-L": DINAT_MODEL_DICT,
@@ -38,42 +37,28 @@ CFG_DICT = {"DiNAT-L": DINAT_CFG_DICT,
 
 PREDICTORS = {
     "DiNAT-L": {
-        "ADE20K (150 classes)": None
+        "COCO (133 classes)": None
     },
     "Swin-L": {
-        "ADE20K (150 classes)": None
+        "COCO (133 classes)": None
     }
 }
 
 METADATA = {
     "DiNAT-L": {
-        "ADE20K (150 classes)": None
+        "COCO (133 classes)": None
     },
     "Swin-L": {
-        "ADE20K (150 classes)": None
-    }
-}
+        "COCO (133 classes)": None
+}}
 
 
 def get_white_pixel_coordinates(binary_image):
-    coordinates = []
-    height, width = binary_image.shape[:2]
 
-    for y in range(height):
-        for x in range(width):
-            if binary_image[y][x] == 1:  # Assuming white pixels are represented by 255
-                coordinates.append([x, y])
+    white_coordinates = np.where(binary_image==1)
+    coordinates = [[x,y] for x, y in zip(white_coordinates[1], white_coordinates[0])] 
 
     return coordinates
-
-
-def point_provider(mask_dict):
-    keys = list(mask_dict.keys())
-
-    point_dict = {}
-    for i in keys:
-        point_dict[i] = get_white_pixel_coordinates(mask_dict[i])
-    return point_dict
 
 def show_segmentation_results(predicted_semantic_map):
     # Define the color map for masks
@@ -97,45 +82,3 @@ def show_segmentation_results(predicted_semantic_map):
     # plt.imshow(colored_map)
     # plt.axis('off')
     # plt.show()
-
-
-def get_concat_v(im1, im2):
-    dst = Image.new('RGB', (im1.width, im1.height + im2.height))
-    dst.paste(im1, (0, 0))
-    dst.paste(im2, (0, im1.height))
-    return dst
-
-
-def tagger(predicted_semantic_map):
-    x = np.unique(np.array(predicted_semantic_map.to('cpu')))
-    # x = np.array(predicted_semantic_map.to('cpu'))
-    # print(x)
-    tags = []
-    for i in x:
-        tags.append(id2label[str(i)])
-    return tags
-
-
-def mask_provider(predicted_semantic_map, tag_list):
-    predicted_semantic_map = np.array(predicted_semantic_map.to('cpu'))
-    result = {}
-    for i in tag_list:
-        mask = np.where(predicted_semantic_map == label2id[i], 1, 0)
-        result[i] = mask
-    return result
-
-
-def whole_mask_attacher(mask_dict):
-    key_list = list(mask_dict.keys())
-    image = Image.fromarray(np.uint8(mask_dict[key_list[0]] * 255))
-
-    for i in range(1, len(key_list)):
-        pil_image = Image.fromarray(np.uint8(mask_dict[key_list[i]] * 255))
-        image = get_concat_v(image, pil_image)
-
-    return image
-
-
-def specific_mask(mask_dict, tag):
-    image = Image.fromarray(np.uint8(mask_dict[str(tag)] * 255))
-    return image
