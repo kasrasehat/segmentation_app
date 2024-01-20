@@ -1,4 +1,0 @@
-# ninja log v5
-0	2664	1703499134105617485	/home/oneformer/modeling/pixel_decoder/ops/build/temp.linux-x86_64-3.7/home/oneformer/modeling/pixel_decoder/ops/src/cpu/ms_deform_attn_cpu.o	d2f3ce4ff461a7a4
-0	8960	1703499140393976993	/home/oneformer/modeling/pixel_decoder/ops/build/temp.linux-x86_64-3.7/home/oneformer/modeling/pixel_decoder/ops/src/cuda/ms_deform_attn_cuda.o	6a29a74e72718bf0
-0	13740	1703499145174248276	/home/oneformer/modeling/pixel_decoder/ops/build/temp.linux-x86_64-3.7/home/oneformer/modeling/pixel_decoder/ops/src/vision.o	a05bdeda2b08c36a
