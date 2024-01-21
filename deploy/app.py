@@ -126,6 +126,7 @@ def segment_image_runner(
             beforebucket,
             afterbucket,
             is_mask_output,
+            service_type,
             client):
 
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S.%f')
@@ -153,6 +154,13 @@ def segment_image_runner(
         response = {}
         response[object_name] = []
         for mask, label, info in zip(masks, labels, sinfo):
+            service_type = service_type.lower()
+            if (service_type == "furniture" and label in ['floor', 'wall', 'ceiling']) or \
+            (service_type == "wall" and label != "wall") or \
+            (service_type == "ceiling" and label != "ceiling") or \
+            (service_type == "floor" and label != "floor"):
+                continue
+
             ar_area = info['area'] * 100 / mask.size
             if ar_area < 0.5:  #### skip objects below 10% from image
                 continue
@@ -173,10 +181,21 @@ def segment_image_runner(
                     "object_id":uuid_,
                 }
             )
+
         return response
 
     else:
-        point_dict = {label: get_white_pixel_coordinates(mask) for label, mask in zip(labels, masks)}
+        point_dict = {}
+        for label, mask in zip(labels, masks):
+            service_type = service_type.lower()
+            if (service_type == "furniture" and label in ['floor', 'wall', 'ceiling']) or \
+            (service_type == "wall" and label != "wall") or \
+            (service_type == "ceiling" and label != "ceiling") or \
+            (service_type == "floor" and label != "floor"):
+                continue
+
+            point_dict[label] = get_white_pixel_coordinates(mask)
+
         return json.dumps(point_dict, default=str)
 
 
@@ -193,10 +212,10 @@ async def sagment_image(object_name: str = '',
         args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
         args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
 
-        args.minioserver = "192.168.32.33:9000"
-        args.miniouser = "test_user_chohfahe7e"
-        args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
-        args.miniosecure = False       
+        # args.minioserver = "192.168.32.33:9000"
+        # args.miniouser = "test_user_chohfahe7e"
+        # args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
+        # args.miniosecure = False       
 
         client = setup_minio(args)
         
@@ -219,7 +238,7 @@ async def sagment_image(object_name: str = '',
 
 
 @app.post("/segment_image/")
-async def sagment_image(object_name: str = '',
+async def sagment_image(object_name: str = '', service_type: str = '',
                         res_mode: str = 'medium', before_bucket: str = '', is_mask_output: bool = True,
                         after_bucket: str = '', debug_mode: bool = False, env: str = ''):
     """
@@ -268,6 +287,7 @@ async def sagment_image(object_name: str = '',
                 before_bucket,
                 after_bucket,
                 is_mask_output,
+                service_type,
                 client
                 )
         logging.info(f"time: {time()-tic}")

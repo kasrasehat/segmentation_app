@@ -59,14 +59,14 @@ def add_common_config(cfg):
 
     # mask_former inference config
     cfg.MODEL.TEST = CN()
-    cfg.MODEL.TEST.SEMANTIC_ON = True
+    cfg.MODEL.TEST.SEMANTIC_ON = False
     cfg.MODEL.TEST.INSTANCE_ON = False
-    cfg.MODEL.TEST.PANOPTIC_ON = False
+    cfg.MODEL.TEST.PANOPTIC_ON = True
     cfg.MODEL.TEST.DETECTION_ON = False
     cfg.MODEL.TEST.OBJECT_MASK_THRESHOLD = 0.0
     cfg.MODEL.TEST.OVERLAP_THRESHOLD = 0.0
     cfg.MODEL.TEST.SEM_SEG_POSTPROCESSING_BEFORE_INFERENCE = False
-    cfg.MODEL.TEST.TASK = "panoptic"
+    cfg.MODEL.TEST.TASK = "semantic"
 
     # TEST AUG Slide
     cfg.TEST.AUG.IS_SLIDE = False

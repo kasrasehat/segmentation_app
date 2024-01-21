@@ -311,6 +311,8 @@ class ContrastiveMultiScaleMaskedTransformerDecoder(nn.Module):
             return_intermediate_dec=False,
         )
 
+        self.class_transformer.half()
+
         # define Transformer decoder here
         self.num_heads = nheads
         self.num_layers = dec_layers
@@ -347,10 +349,12 @@ class ContrastiveMultiScaleMaskedTransformerDecoder(nn.Module):
             )
 
         self.decoder_norm = nn.LayerNorm(hidden_dim)
+        self.decoder_norm.half()
 
         self.num_queries = num_queries
         # learnable query p.e.
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.query_embed.requires_grad = False
 
         # level embedding (we always use 3 scales)
         self.num_feature_levels = 3
@@ -370,6 +374,8 @@ class ContrastiveMultiScaleMaskedTransformerDecoder(nn.Module):
         if self.mask_classification:
             self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
+        self.class_embed.half()
+        self.mask_embed.half()
 
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
@@ -431,9 +437,9 @@ class ContrastiveMultiScaleMaskedTransformerDecoder(nn.Module):
         
         feats = self.pe_layer(mask_features, None)
 
-        out_t, _ = self.class_transformer(feats, None, 
-                                    self.query_embed.weight[:-1], 
-                                    self.class_input_proj(mask_features),
+        out_t, _ = self.class_transformer(feats.half(), None, 
+                                    self.query_embed.weight[:-1].half(), 
+                                    self.class_input_proj(mask_features).half(),
                                     tasks if self.use_task_norm else None)
         out_t = out_t[0].permute(1, 0, 2)
         
@@ -445,7 +451,7 @@ class ContrastiveMultiScaleMaskedTransformerDecoder(nn.Module):
         predictions_mask = []
 
         # prediction heads on learnable query features
-        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[0], i=0)
+        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features.half(), attn_mask_target_size=size_list[0], i=0)
         predictions_class.append(outputs_class)
         predictions_mask.append(outputs_mask)
 
@@ -471,7 +477,7 @@ class ContrastiveMultiScaleMaskedTransformerDecoder(nn.Module):
                 output
             )
 
-            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels], i=i+1)
+            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output.half(), mask_features.half(), attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels], i=i+1)
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
             
@@ -484,10 +490,10 @@ class ContrastiveMultiScaleMaskedTransformerDecoder(nn.Module):
             'contrastive_logits': query_class,
             'pred_logits': predictions_class[-1],
             'pred_masks': predictions_mask[-1],
-            'aux_outputs': self._set_aux_loss(
-                predictions_class if self.mask_classification else None, 
-                predictions_mask, 
-            )
+            # 'aux_outputs': self._set_aux_loss(
+            #     predictions_class if self.mask_classification else None, 
+            #     predictions_mask, 
+            # )
         }
 
         return out

@@ -11,3 +11,4 @@
 # Modified by Bowen Cheng from https://github.com/fundamentalvision/Deformable-DETR
 
 FORCE_CUDA=1 python setup.py build install
+# python setup.py build install

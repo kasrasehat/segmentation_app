@@ -440,6 +440,8 @@ class BasicLayer(nn.Module):
             attn_mask == 0, float(0.0)
         )
 
+        attn_mask = attn_mask.half()
+
         for blk in self.blocks:
             blk.H, blk.W = H, W
             if self.use_checkpoint:
@@ -563,6 +565,8 @@ class SwinTransformer(nn.Module):
             embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None,
         )
+        self.patch_embed.eval()
+        self.patch_embed.half()
 
         # absolute position embedding
         if self.ape:
@@ -603,6 +607,7 @@ class SwinTransformer(nn.Module):
                 downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
                 use_checkpoint=use_checkpoint,
             )
+            layer.half()
             self.layers.append(layer)
 
         num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
@@ -619,6 +624,7 @@ class SwinTransformer(nn.Module):
     def _freeze_stages(self):
         if self.frozen_stages >= 0:
             self.patch_embed.eval()
+            self.patch_embed.half()
             for param in self.patch_embed.parameters():
                 param.requires_grad = False
 

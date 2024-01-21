@@ -522,16 +522,17 @@ class Visualizer:
                 )
             )
 
-        self.overlay_instances(
-            masks=masks,
-            boxes=boxes,
-            labels=labels,
-            keypoints=keypoints,
-            assigned_colors=colors,
-            alpha=alpha,
-            is_text=is_text,
-        )
-        return self.output
+        # self.overlay_instances(
+        #     masks=masks,
+        #     boxes=boxes,
+        #     labels=labels,
+        #     keypoints=keypoints,
+        #     assigned_colors=colors,
+        #     alpha=alpha,
+        #     is_text=is_text,
+        # )
+        # return self.output
+        return masks, labels
 
     def draw_sem_seg(self, sem_seg, area_threshold=None, alpha=0.8, is_text=True):
         """
@@ -544,6 +545,9 @@ class Visualizer:
         Returns:
             output (VisImage): image object with visualizations.
         """
+        tmp_mask = []
+        tmp_text = []
+
         if isinstance(sem_seg, torch.Tensor):
             sem_seg = sem_seg.numpy()
         labels, areas = np.unique(sem_seg, return_counts=True)
@@ -557,6 +561,9 @@ class Visualizer:
 
             binary_mask = (sem_seg == label).astype(np.uint8)
             text = self.metadata.stuff_classes[label]
+            tmp_mask.append(binary_mask)
+            tmp_text.append(text.split(" ")[0])
+
             self.draw_binary_mask(
                 binary_mask,
                 color=mask_color,
@@ -566,7 +573,8 @@ class Visualizer:
                 area_threshold=area_threshold,
                 is_text=is_text,
             )
-        return self.output
+     
+        return tmp_mask, tmp_text
 
     def draw_panoptic_seg(self, panoptic_seg, segments_info, area_threshold=None, alpha=0.7, is_text=True,):
         """
@@ -626,11 +634,19 @@ class Visualizer:
         labels = _create_text_labels(
             category_ids, scores, self.metadata.stuff_classes, [x.get("iscrowd", 0) for x in sinfo]
         )
+        # try:
+        #     colors = [
+        #         self._jitter([x / 255 for x in self.metadata.stuff_colors[c]]) for c in category_ids
+        #     ]
+        # except AttributeError:
+        #     colors = None
+        # self.overlay_instances(masks=masks, labels=labels, assigned_colors=colors, alpha=alpha, is_text=is_text)
 
         masks = masks + tuple(tmp_mask)
         sinfo = sinfo + tuple(tmp_sinfo)
         labels = labels + tmp_text
 
+        # return self.output, masks, sinfo, labels
         return masks, sinfo, labels
 
     draw_panoptic_seg_predictions = draw_panoptic_seg  # backward compatibility

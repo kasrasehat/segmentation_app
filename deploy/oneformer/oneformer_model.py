@@ -85,8 +85,10 @@ class OneFormer(nn.Module):
         """
         super().__init__()
         self.backbone = backbone
+        self.backbone.half()
         self.sem_seg_head = sem_seg_head
         self.task_mlp = task_mlp
+        self.task_mlp.half()
         self.text_encoder = text_encoder
         self.text_projector = text_projector
         self.prompt_ctx = prompt_ctx
@@ -104,9 +106,9 @@ class OneFormer(nn.Module):
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)
 
         # additional args
-        self.semantic_on = semantic_on
-        self.instance_on = instance_on
-        self.panoptic_on = panoptic_on
+        self.semantic_on = False
+        self.instance_on = False
+        self.panoptic_on = True
         self.detection_on = detection_on
         self.test_topk_per_image = test_topk_per_image
 
@@ -244,6 +246,7 @@ class OneFormer(nn.Module):
         
         return {"texts": text_x}
     
+    @torch.inference_mode()
     def forward(self, batched_inputs):
         """
         Args:
@@ -274,9 +277,9 @@ class OneFormer(nn.Module):
         images = ImageList.from_tensors(images, self.size_divisibility)
 
         tasks = torch.cat([self.task_tokenizer(x["task"]).to(self.device).unsqueeze(0) for x in batched_inputs], dim=0)
-        tasks = self.task_mlp(tasks.float())
+        tasks = self.task_mlp(tasks.half())
 
-        features = self.backbone(images.tensor)
+        features = self.backbone(images.tensor.half())
         outputs = self.sem_seg_head(features, tasks)
 
         if self.training:
@@ -303,21 +306,22 @@ class OneFormer(nn.Module):
                     losses.pop(k)
             return losses
         else:
-            mask_cls_results = outputs["pred_logits"]
-            mask_pred_results = outputs["pred_masks"]
+            # mask_cls_results = outputs["pred_logits"]
+            # mask_pred_results = outputs["pred_masks"]
             # upsample masks
             mask_pred_results = F.interpolate(
-                mask_pred_results,
+                outputs["pred_masks"],
                 size=(images.tensor.shape[-2], images.tensor.shape[-1]),
                 mode="bilinear",
                 align_corners=False,
             )
 
-            del outputs
+            # del outputs
+            # torch.cuda.empty_cache()
 
             processed_results = []
             for i, data in enumerate(zip(
-                mask_cls_results, mask_pred_results, batched_inputs, images.image_sizes
+                outputs["pred_logits"], mask_pred_results, batched_inputs, images.image_sizes
             )):
                 mask_cls_result, mask_pred_result, input_per_image, image_size = data
                 height = input_per_image.get("height", image_size[0])
@@ -350,6 +354,8 @@ class OneFormer(nn.Module):
                 if self.detection_on:
                     bbox_r = retry_if_cuda_oom(self.instance_inference)(mask_cls_result, mask_pred_result)
                     processed_results[-1]["box_instances"] = bbox_r
+                
+            del mask_cls_result, outputs, mask_pred_result, mask_pred_results
 
             return processed_results
 
