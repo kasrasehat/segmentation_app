@@ -152,7 +152,7 @@ def segment_image_runner(
 
     if is_mask_output:
         response = {}
-        response[object_name] = []
+        response = []
         for mask, label, info in zip(masks, labels, sinfo):
             service_type = service_type.lower()
             if (service_type == "furniture" and label in ['floor', 'wall', 'ceiling']) or \
@@ -175,7 +175,7 @@ def segment_image_runner(
 
             os.remove(local_after_path)
 
-            response[object_name].append(
+            response.append(
                 {
                     "tag":label,
                     "object_id":uuid_,
@@ -195,6 +195,8 @@ def segment_image_runner(
                 continue
 
             point_dict[label] = get_white_pixel_coordinates(mask)
+
+        point_dict = {key: ','.join(','.join(map(str, sublist)) for sublist in value) for key, value in point_dict.items()}
 
         return json.dumps(point_dict, default=str)
 
@@ -226,10 +228,9 @@ async def sagment_image(object_name: str = '',
 
         mask = Image.open(local_before_path).convert("RGB")
 
-        point_dict = {
-            "points": get_white_pixel_coordinates(np.array(mask)),
-        }
-        return json.dumps(point_dict, default=str)
+        point_dict = ','.join(','.join(map(str, sublist)) for sublist in get_white_pixel_coordinates(np.array(mask)))
+
+        return json.dumps([point_dict], default=str)
 
     except Exception as e:
         torch.cuda.empty_cache()
