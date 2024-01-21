@@ -13,6 +13,7 @@ import torch
 import uvicorn
 import numpy as np
 import cv2
+import uuid
 from PIL import Image
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,13 +83,13 @@ def resize_image_with_height(pil_image, new_height):
     # Return the resized image
     return resized_image
 
-def put_image(bucket_name, object_name, local_file_path, client):
+def put_image(bucket_name, object_name, local_file_path, client, logging):
     client.fput_object(bucket_name, object_name, local_file_path)
-    # logging.info(f"\timage uploaded: {object_name}")
+    logging.info(f"\timage uploaded: {object_name}")
 
-def get_image(bucket_name, object_name, local_file_path, client):
+def get_image(bucket_name, object_name, local_file_path, client, logging):
     client.fget_object(bucket_name, object_name, local_file_path)
-    # logging.info(f"\timage downloaded: {local_file_path}")
+    logging.info(f"\timage downloaded: {local_file_path}")
 
 def panoptic_run(img, predictor, metadata):
     visualizer = Visualizer(img[:, :, ::-1], metadata=metadata, instance_mode=ColorMode.IMAGE)
@@ -108,7 +109,7 @@ def setup_cfg(args, dataset, backbone):
     add_swin_config(cfg)
     add_oneformer_config(cfg)
     add_dinat_config(cfg)
-    dataset = "coco"
+    dataset = "ade20k"
     cfg_path = CFG_DICT[backbone][dataset]
     cfg.merge_from_file(cfg_path)
     if torch.cuda.is_available():
@@ -123,18 +124,19 @@ def segment_image_runner(
             object_name,
             res_mode,
             beforebucket,
+            afterbucket,
+            is_mask_output,
             client):
 
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S.%f')
     logging.info(timestamp)
 
-    torch.cuda.empty_cache()
     file_name, file_extension = os.path.splitext(object_name)
 
     temp_save_before_path = f'./{file_name}-{timestamp}'
     local_before_path = temp_save_before_path + file_extension
 
-    get_image(beforebucket, object_name, local_before_path, client)
+    get_image(beforebucket, object_name, local_before_path, client, logging)
 
     image_org = Image.open(local_before_path).convert("RGB")
     w_org , h_org = image_org.size
@@ -143,19 +145,83 @@ def segment_image_runner(
     image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     masks, sinfo, labels = panoptic_run(image, predictor, metadata)
 
-    point_dict = {label: get_white_pixel_coordinates(mask) for label, mask in zip(labels, masks)}
-
     os.remove(local_before_path)    
     torch.cuda.empty_cache()
     gc.collect()
 
-    return json.dumps(point_dict, default=str)
+    if is_mask_output:
+        response = {}
+        response[object_name] = []
+        for mask, label, info in zip(masks, labels, sinfo):
+            ar_area = info['area'] * 100 / mask.size
+            if ar_area < 0.5:  #### skip objects below 10% from image
+                continue
+            mask = (mask*255).astype(np.uint8)
+            uuid_ = str(uuid.uuid4())
+            label = label.split(" ")[0].split(",")[0]
+
+            local_after_path = f"{file_name}#{label}#{uuid_}.jpg"
+            cv2.imwrite(local_after_path, mask)
+
+            put_image(afterbucket, local_after_path, local_after_path, client, logging)
+
+            os.remove(local_after_path)
+
+            response[object_name].append(
+                {
+                    "tag":label,
+                    "object_id":uuid_,
+                }
+            )
+        return response
+
+    else:
+        point_dict = {label: get_white_pixel_coordinates(mask) for label, mask in zip(labels, masks)}
+        return json.dumps(point_dict, default=str)
+
+
+@app.post("/mask_points/")
+async def sagment_image(object_name: str = '',
+                        tag: str = '',
+                        uuid_: str = '',
+                        beforebucket: str = '',
+                        env: str = ''
+                        ):
+    try:
+        args.miniosecure = bool(os.getenv(f'{env}_MINIO_SECURE'))
+        args.miniouser = os.getenv(f'{env}_MINIO_ACCESS_KEY')
+        args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
+        args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
+
+        args.minioserver = "192.168.32.33:9000"
+        args.miniouser = "test_user_chohfahe7e"
+        args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
+        args.miniosecure = False       
+
+        client = setup_minio(args)
+        
+        file_name, file_extension = os.path.splitext(object_name)
+        local_before_path = f"{file_name}#{tag}#{uuid_}.jpg"
+
+        get_image(beforebucket, local_before_path, local_before_path, client, logging)
+
+        mask = Image.open(local_before_path).convert("RGB")
+
+        point_dict = {
+            "points": get_white_pixel_coordinates(np.array(mask)),
+        }
+        return json.dumps(point_dict, default=str)
+
+    except Exception as e:
+        torch.cuda.empty_cache()
+        logging.error(f'/mask_points HTTP:/500, {e}')
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.post("/segment_image/")
 async def sagment_image(object_name: str = '',
-                        res_mode: str = 'medium', before_bucket: str = '',
-                        debug_mode: bool = False, env: str = ''):
+                        res_mode: str = 'medium', before_bucket: str = '', is_mask_output: bool = True,
+                        after_bucket: str = '', debug_mode: bool = False, env: str = ''):
     """
         Perform computation and instruct pix2pix processing for an image.
 
@@ -200,6 +266,8 @@ async def sagment_image(object_name: str = '',
                 object_name,
                 res_mode,
                 before_bucket,
+                after_bucket,
+                is_mask_output,
                 client
                 )
         logging.info(f"time: {time()-tic}")
@@ -233,9 +301,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # args.server = "localhost"
+    # args.server = "0.0.0.0"
     # args.port = 4500
-    # args.checkpoint_oneformer = './150_16_swin_l_oneformer_coco_100ep.pth'
+    # args.checkpoint_oneformer = './250_16_swin_l_oneformer_ade20k_160k.pth'
 
     # prepare logging
     timestamp_log = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M-%S')
@@ -250,7 +318,7 @@ if __name__ == "__main__":
     global model, processor, device, predictor, metadata, dataset
 
     backbone = "Swin-L"
-    dataset = "COCO (133 classes)"
+    dataset = "ADE20K (150 classes)"
     cfg = setup_cfg(args, dataset, backbone)
     metadata = MetadataCatalog.get(
     cfg.DATASETS.TEST_PANOPTIC[0] if len(cfg.DATASETS.TEST_PANOPTIC) else "__unused"

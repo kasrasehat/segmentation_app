@@ -10,13 +10,16 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 
 
-KEY_DICT = {"COCO (133 classes)": "coco",}
+KEY_DICT = {
+            "ADE20K (150 classes)": "ade20k",}
 
 SWIN_CFG_DICT = {
-            "coco": "configs/coco/oneformer_swin_large_IN21k_384_bs16_100ep.yaml"}
+            "ade20k": "configs/ade20k/oneformer_swin_large_IN21k_384_bs16_160k.yaml",}
+
 
 DINAT_CFG_DICT = {
-             "coco": "configs/coco/oneformer_dinat_large_bs16_100ep.yaml",}
+            "ade20k": "configs/ade20k/oneformer_dinat_large_IN21k_384_bs16_160k.yaml",}
+
 
 CFG_DICT = {"DiNAT-L": DINAT_CFG_DICT,
         "Swin-L": SWIN_CFG_DICT }
@@ -24,20 +27,21 @@ CFG_DICT = {"DiNAT-L": DINAT_CFG_DICT,
 
 PREDICTORS = {
     "DiNAT-L": {
-        "COCO (133 classes)": None
+        "ADE20K (150 classes)": None
     },
     "Swin-L": {
-        "COCO (133 classes)": None
+        "ADE20K (150 classes)": None
     }
 }
 
 METADATA = {
     "DiNAT-L": {
-        "COCO (133 classes)": None
+        "ADE20K (150 classes)": None
     },
     "Swin-L": {
-        "COCO (133 classes)": None
-}}
+        "ADE20K (150 classes)": None
+    }
+}
 
 
 def get_white_pixel_coordinates(binary_image):
