@@ -168,7 +168,7 @@ def segment_image_runner(
             uuid_ = str(uuid.uuid4())
             label = label.split(" ")[0].split(",")[0]
 
-            local_after_path = f"{file_name}#{label}#{uuid_}.jpg"
+            local_after_path = f"{uuid_}.jpeg"
             cv2.imwrite(local_after_path, mask)
 
             put_image(afterbucket, local_after_path, local_after_path, client, logging)
@@ -202,8 +202,7 @@ def segment_image_runner(
 
 
 @app.post("/mask_points/")
-async def sagment_image(object_name: str = '',
-                        tag: str = '',
+async def sagment_image(
                         uuid_: str = '',
                         beforebucket: str = '',
                         env: str = ''
@@ -221,8 +220,7 @@ async def sagment_image(object_name: str = '',
 
         client = setup_minio(args)
         
-        file_name, file_extension = os.path.splitext(object_name)
-        local_before_path = f"{file_name}#{tag}#{uuid_}.jpg"
+        local_before_path = f"{uuid_}.jpeg"
 
         get_image(beforebucket, local_before_path, local_before_path, client, logging)
 
