@@ -168,7 +168,7 @@ def segment_image_runner(
             uuid_ = str(uuid.uuid4())
             label = label.split(" ")[0].split(",")[0]
 
-            local_after_path = f"{uuid_}.jpeg"
+            local_after_path = f"{uuid_}.png"
             cv2.imwrite(local_after_path, mask)
 
             put_image(afterbucket, local_after_path, local_after_path, client, logging)
@@ -220,7 +220,7 @@ async def sagment_image(
 
         client = setup_minio(args)
         
-        local_before_path = f"{uuid_}.jpeg"
+        local_before_path = f"{uuid_}.png"
 
         get_image(beforebucket, local_before_path, local_before_path, client, logging)
 
