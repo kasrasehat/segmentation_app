@@ -46,7 +46,7 @@ METADATA = {
 
 def get_white_pixel_coordinates(binary_image):
 
-    white_coordinates = np.where(binary_image==1)
+    white_coordinates = np.where(binary_image==255)
     coordinates = np.transpose((white_coordinates[1],white_coordinates[0]))
     coordinates = coordinates.tolist()
     # coordinates = [[x,y] for x, y in zip(white_coordinates[1], white_coordinates[0])] 

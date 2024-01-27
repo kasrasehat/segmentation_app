@@ -69,6 +69,10 @@ def test_gpu_cuda():
     logging.info('\tdevice: %s', torch.cuda.device(0))
     logging.info('\tdevice name: %s', torch.cuda.get_device_name())
 
+def setup_file_logging(file_path, log_level=logging.INFO):
+    # Set up logging
+    logging.basicConfig(level=log_level)
+
 def resize_image_with_height(pil_image, new_height):
     # Calculate the aspect ratio
     width, height = pil_image.size
@@ -169,7 +173,7 @@ def segment_image_runner(
             label = label.split(" ")[0].split(",")[0]
 
             local_after_path = f"{uuid_}.png"
-            cv2.imwrite(local_after_path, mask)
+            cv2.imwrite(local_after_path, cv2.resize(mask, (w_org, h_org)))
 
             put_image(afterbucket, local_after_path, local_after_path, client, logging)
 
@@ -193,47 +197,15 @@ def segment_image_runner(
             (service_type == "ceiling" and label != "ceiling") or \
             (service_type == "floor" and label != "floor"):
                 continue
+            
+            mask = (mask*255).astype(np.uint8)
+            mask = cv2.resize(mask, (w_org, h_org))
 
             point_dict[label] = get_white_pixel_coordinates(mask)
 
         point_dict = {key: ','.join(','.join(map(str, sublist)) for sublist in value) for key, value in point_dict.items()}
 
         return json.dumps(point_dict, default=str)
-
-
-@app.post("/mask_points/")
-async def sagment_image(
-                        uuid_: str = '',
-                        beforebucket: str = '',
-                        env: str = ''
-                        ):
-    try:
-        args.miniosecure = bool(os.getenv(f'{env}_MINIO_SECURE'))
-        args.miniouser = os.getenv(f'{env}_MINIO_ACCESS_KEY')
-        args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
-        args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
-
-        # args.minioserver = "192.168.32.33:9000"
-        # args.miniouser = "test_user_chohfahe7e"
-        # args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
-        # args.miniosecure = False       
-
-        client = setup_minio(args)
-        
-        local_before_path = f"{uuid_}.png"
-
-        get_image(beforebucket, local_before_path, local_before_path, client, logging)
-
-        mask = Image.open(local_before_path).convert("RGB")
-
-        point_dict = ','.join(','.join(map(str, sublist)) for sublist in get_white_pixel_coordinates(np.array(mask)))
-
-        return json.dumps([point_dict], default=str)
-
-    except Exception as e:
-        torch.cuda.empty_cache()
-        logging.error(f'/mask_points HTTP:/500, {e}')
-        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.post("/segment_image/")
@@ -302,11 +274,40 @@ async def sagment_image(object_name: str = '', service_type: str = '',
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-def setup_file_logging(file_path, log_level=logging.INFO):
-    # Set up logging
-    logging.basicConfig(level=log_level)
+@app.post("/mask_points/")
+async def sagment_image(
+                        uuid_: str = '',
+                        beforebucket: str = '',
+                        env: str = ''
+                        ):
+    try:
+        args.miniosecure = bool(os.getenv(f'{env}_MINIO_SECURE'))
+        args.miniouser = os.getenv(f'{env}_MINIO_ACCESS_KEY')
+        args.miniopass = os.getenv(f'{env}_MINIO_SECRET_KEY')
+        args.minioserver = os.getenv(f'{env}_MINIO_ADDRESS')
 
+        # args.minioserver = "192.168.32.33:9000"
+        # args.miniouser = "test_user_chohfahe7e"
+        # args.miniopass = "ox2ahheevahfaicein5rooyahze4Zeidung3aita6iaNahXu"
+        # args.miniosecure = False       
 
+        client = setup_minio(args)
+        
+        local_before_path = f"{uuid_}.png"
+
+        get_image(beforebucket, local_before_path, local_before_path, client, logging)
+
+        mask = Image.open(local_before_path).convert("RGB")
+
+        point_dict = ','.join(','.join(map(str, sublist)) for sublist in get_white_pixel_coordinates(np.array(mask)))
+
+        return json.dumps([point_dict], default=str)
+
+    except Exception as e:
+        torch.cuda.empty_cache()
+        logging.error(f'/mask_points HTTP:/500, {e}')
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Setup a segmentation service.")
