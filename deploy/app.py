@@ -155,37 +155,58 @@ def segment_image_runner(
     gc.collect()
 
     if is_mask_output:
+        mask_tmp = np.zeros((h_org, w_org), dtype=np.uint8)
         response = {}
         response = []
         for mask, label, info in zip(masks, labels, sinfo):
             service_type = service_type.lower()
-            if (service_type == "furniture" and label in ['floor', 'wall', 'ceiling']) or \
+            if service_type == "furniturewall" and label in ['wall', 'ceiling'] or \
+            (service_type == "furniture" and label in ['floor', 'wall', 'ceiling']) or \
             (service_type == "wall" and label != "wall") or \
             (service_type == "ceiling" and label != "ceiling") or \
             (service_type == "floor" and label != "floor"):
                 continue
 
-            ar_area = info['area'] * 100 / mask.size
-            if ar_area < 0.5:  #### skip objects below 10% from image
-                continue
-            mask = (mask*255).astype(np.uint8)
-            uuid_ = str(uuid.uuid4())
-            label = label.split(" ")[0].split(",")[0]
 
+            mask = (mask*255).astype(np.uint8)
+            mask = cv2.resize(mask, (w_org, h_org))
+
+            if service_type == "furniturewall":
+                mask_tmp += mask
+            
+            else:
+                ar_area = info['area'] * 100 / mask.size
+                if ar_area < 0.5: 
+                    continue
+                uuid_ = str(uuid.uuid4())
+                label = label.split(" ")[0].split(",")[0]
+                local_after_path = f"{uuid_}.png"
+                cv2.imwrite(local_after_path, mask)
+
+                put_image(afterbucket, local_after_path, local_after_path, client, logging)
+
+                os.remove(local_after_path)
+
+                response.append(
+                    {
+                        "tag":label,
+                        "object_id":uuid_,
+                    }
+                )
+        
+        if service_type == "furniturewall":
+            uuid_ = str(uuid.uuid4())
             local_after_path = f"{uuid_}.png"
-            cv2.imwrite(local_after_path, cv2.resize(mask, (w_org, h_org)))
+            cv2.imwrite(local_after_path, mask_tmp)
 
             put_image(afterbucket, local_after_path, local_after_path, client, logging)
 
-            os.remove(local_after_path)
-
             response.append(
-                {
-                    "tag":label,
-                    "object_id":uuid_,
-                }
-            )
-
+                    {
+                        "tag":"furniturewall",
+                        "object_id":uuid_,
+                    }
+                )
         return response
 
     else:
