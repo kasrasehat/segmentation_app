@@ -322,7 +322,7 @@ async def sagment_image(
 
         point_dict = ','.join(','.join(map(str, sublist)) for sublist in get_white_pixel_coordinates(np.array(mask)))
 
-        return json.dumps([point_dict], default=str)
+        return json.dumps({"points":point_dict}, default=str)
 
     except Exception as e:
         torch.cuda.empty_cache()
