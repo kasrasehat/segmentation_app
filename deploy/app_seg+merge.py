@@ -7,7 +7,7 @@ import logging
 import gc
 from time import time
 import json
-
+from skimage.morphology import erosion, dilation
 from fastapi import FastAPI, UploadFile, File, Form
 import torch
 import uvicorn
@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from detectron2.config import get_cfg
 from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.data import MetadataCatalog
+from typing import List
 
 from demo.defaults import DefaultPredictor
 from demo.visualizer import Visualizer, ColorMode
@@ -100,7 +101,6 @@ def get_bounding_box(mask):
     return bounding_box
 
 
-
 def resize_image_with_height(pil_image, new_height):
     # Calculate the aspect ratio
     width, height = pil_image.size
@@ -144,7 +144,7 @@ def setup_cfg(args, dataset, backbone):
     add_oneformer_config(cfg)
     add_dinat_config(cfg)
     dataset = "ade20k"
-    cfg_path = CFG_DICT[backbone][dataset]
+    cfg_path = "deploy/" + CFG_DICT[backbone][dataset]
     cfg.merge_from_file(cfg_path)
     if torch.cuda.is_available():
         cfg.MODEL.DEVICE = 'cuda'
@@ -200,7 +200,8 @@ def calculate_modified_iou(mask1, mask2):
     return intersection / smaller_mask_area
 
 
-def merge_masks(masks, labels, sinfo, threshold=0.5):
+def merge_masks(masks: List = None, labels: List = None,
+                bboxes: List = None, sinfo: List = None, threshold: float = 0.9):
     """
     Merge masks based on a modified IoU greater than the given threshold and
     keep the mask with the larger area.
@@ -214,34 +215,136 @@ def merge_masks(masks, labels, sinfo, threshold=0.5):
     """
     merged = masks.copy()
     i = 0
+    allowed_labels = ['bed', 'sofa', 'chair', 'armchair', 'cushion', 'pillow', 'swivel chair']
+    disallowed_labels = ['wall', 'floor', 'vast', 'flower', 'lamp', 'plant', 'ceiling', 'rug']
     while i < len(merged) - 1:
         j = i + 1
         while j < len(merged):
-            iou = calculate_modified_iou(merged[i], merged[j])
-            if iou > threshold:
-                # Determine which mask has the smaller area
-                area_i = merged[i].sum()
-                area_j = merged[j].sum()
+            if labels[i] not in disallowed_labels and labels[j] not in disallowed_labels and \
+                    (labels[i] in allowed_labels or labels[j] in allowed_labels):
+                iou = calculate_boundingbox_iou(bbox1=bboxes[i], bbox2=bboxes[j])
+                if iou >= threshold:
+                    # Determine which mask has the smaller area
+                    area_i = merged[i].sum()
+                    area_j = merged[j].sum()
 
-                # Merge masks i and j
-                if area_i >= area_j:
-                    merged[i] = np.logical_or(merged[i], merged[j])
-                    del merged[j]
-                    del labels[j]
-                    del sinfo[j]
+                    # Merge masks i and j
+                    if area_i >= area_j:
+                        merged[i] = np.logical_or(merged[i], merged[j])
+                        del merged[j]
+                        del labels[j]
+                        del sinfo[j]
+                        del bboxes[j]
+                    else:
+                        merged[j] = np.logical_or(merged[i], merged[j])
+                        del merged[i]
+                        del labels[i]
+                        del sinfo[i]
+                        del bboxes[i]
+                        # Since we have removed the i-th mask, we need to adjust the index i
+                        if i != 0:
+                            i -= 1
+                        break  # Exit the inner loop since we have altered the list
                 else:
-                    merged[j] = np.logical_or(merged[i], merged[j])
-                    del merged[i]
-                    del labels[i]
-                    del sinfo[i]
-                    # Since we have removed the i-th mask, we need to adjust the index i
-                    if i != 0:
-                        i -= 1
-                    break  # Exit the inner loop since we have altered the list
+                    j += 1
             else:
                 j += 1
+
         i += 1
     return merged, labels, sinfo
+
+
+def calculate_boundingbox_iou(bbox1, bbox2):
+    """
+    Calculate a modified IoU metric of two bounding boxes, using the area of the
+    intersection as the numerator and the area of the smaller bounding box as the denominator.
+
+    Parameters:
+    bbox1, bbox2 (list of int): Each list contains [min_x, min_y, max_x, max_y] coordinates of a bounding box.
+
+    Returns:
+    float: The modified IoU value.
+    """
+    # Unpack the coordinates
+    min_x1, min_y1, max_x1, max_y1 = bbox1
+    min_x2, min_y2, max_x2, max_y2 = bbox2
+
+    # Calculate the coordinates of the intersection rectangle
+    inter_min_x = max(min_x1, min_x2)
+    inter_max_x = min(max_x1, max_x2)
+    inter_min_y = max(min_y1, min_y2)
+    inter_max_y = min(max_y1, max_y2)
+
+    # Calculate the intersection area
+    intersection_area = max(0, inter_max_x - inter_min_x) * max(0, inter_max_y - inter_min_y)
+
+    # Calculate each bounding box's area
+    area_bbox1 = (max_x1 - min_x1) * (max_y1 - min_y1)
+    area_bbox2 = (max_x2 - min_x2) * (max_y2 - min_y2)
+
+    # Calculate the area of the smaller bounding box
+    smaller_bbox_area = min(area_bbox1, area_bbox2)
+
+    # Calculate modified IoU
+    if smaller_bbox_area == 0:
+        return 0  # Avoid division by zero
+    return intersection_area / smaller_bbox_area
+
+
+def multi_dilation(image, kernel, iterations):
+    for i in range(iterations):
+        image = dilation(image, kernel)
+    return image
+
+
+def multi_erosion(image, kernel, iterations):
+    for i in range(iterations):
+        image = erosion(image, kernel)
+    return image
+
+
+from PIL import Image
+
+
+def extract_object_with_array(image, mask, background_color='white'):
+    """
+    Extracts an object from a 3-channel image using a 1-channel mask, leaving the object unaltered,
+    and sets the surrounding background to a specified color. The output image will be a 3-channel (RGB) image.
+
+    Parameters:
+    - image (numpy.ndarray): The image array of shape (height, width, 3).
+    - mask (numpy.ndarray): The mask array of shape (height, width), where non-zero (or white) pixels represent the object.
+    - background_color (str): Background color for the output image ('white', 'black', or 'light red').
+
+    Returns:
+    - PIL.Image: Image with the object extracted and the specified background color, as a 3-channel RGB image.
+    """
+    # Ensure the image has 3 channels
+    if image.shape[2] != 3:
+        raise ValueError("Image must have 3 channels (RGB).")
+
+    # Prepare the background color
+    if background_color == 'white':
+        bg_color = np.array([255, 255, 255], dtype=np.uint8)
+    elif background_color == 'black':
+        bg_color = np.array([0, 0, 0], dtype=np.uint8)
+    elif background_color == 'light red':
+        bg_color = np.array([100, 100, 255], dtype=np.uint8)  # Light red
+    else:
+        raise ValueError("Unsupported background color. Choose 'white', 'black', or 'light red'.")
+
+    # Initialize the output image as a copy of the original image
+    output_image = np.copy(image)
+
+    # Apply the mask to set the background pixels
+    # Where mask is 0, set the pixel to the background color
+    for c in range(3):  # Iterate over the RGB channels
+        output_image[:, :, c] = np.where(mask > 128, bg_color[c], output_image[:, :, c])
+    # output_np[mask_expanded > 0] = image_rgba[mask_expanded > 0]
+    # Convert the output array back to a PIL Image
+    output_image_pil = Image.fromarray(output_image[:, :, ::-1])
+
+    return output_image_pil
 
 
 def segment_image_runner(
@@ -269,30 +372,51 @@ def segment_image_runner(
     image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     masks, sinfo, labels = panoptic_run(image, predictor, metadata)
     masks, sinfo, labels = list(masks), list(sinfo), list(labels)
-    # bboxes = []
-    # for mask, label, info in zip(masks, labels, sinfo):
-    #     bboxes.append(get_bounding_box_v2(mask))
+    bboxes = []
+    for mask, label, info in zip(masks, labels, sinfo):
+        bboxes.append(get_bounding_box_v2(mask))
+
+    # for bbox, label in zip(bboxes, labels):
+    #     if label == 'lamp' or label == 'bed':
+    #         cv2.rectangle(image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+    #         # Put the label text above the bounding box
+    #         label_position = (bbox[0], bbox[1] - 10)  # Position for the label to be above the box
+    #         if bbox[1] < 20:  # If the bounding box is too close to the top, put the label below
+    #             label_position = (bbox[0], bbox[3] + 20)
     #
+    #         cv2.putText(image, label, label_position, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    #
+    # # Show the image with the bounding box
+    # cv2.imshow('Bounding Box', image)
+    # cv2.waitKey(0)  # Wait for a key press to show the next image
+    #
+    # cv2.destroyAllWindows()  # Close all OpenCV windows
     # bboxes = tuple(bboxes)
     # os.remove(local_before_path)
     torch.cuda.empty_cache()
     gc.collect()
-
     # mask_tmp = np.zeros((h_org, w_org), dtype=np.uint8)
     # response = {}
     response = []
     p = 0
-    masks, labels, sinfo = merge_masks(masks, labels, sinfo)
+    masks, labels, sinfo = merge_masks(masks, labels, bboxes, sinfo)
+    kernel = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]])
     for mask, label, info in zip(masks, labels, sinfo):
-
-
         mask = (mask * 255).astype(np.uint8)
         mask = cv2.resize(mask, (w_org, h_org))
-        mask = cv2.bitwise_not(mask)
+        image = cv2.resize(image, (w_org, h_org))
+        mask = multi_dilation(mask, kernel, 4)
+        mask = multi_erosion(mask, kernel, 3)
+        # mask = multi_dilation(mask, kernel, 3)
+        # mask = cv2.bitwise_not(mask)
         uuid_ = str(uuid.uuid4())
         label = label.split(" ")[0].split(",")[0]
         local_after_path = base_name + '/' + '_' + label + str(p) + '.jpg'
         cv2.imwrite(local_after_path, mask)
+        for color in ['white', 'black', 'light red']:
+            path = base_name + '/' + '_' + label + str(p) + '_' + color + '.jpg'
+            output = extract_object_with_array(image, mask, color)
+            output.save(path)
         p += 1
 
         response.append(
@@ -302,19 +426,6 @@ def segment_image_runner(
             }
         )
 
-        # if service_type == "furniturewall":
-        #     uuid_ = str(uuid.uuid4())
-        #     local_after_path = f"{uuid_}.png"
-        #     cv2.imwrite(local_after_path, mask_tmp)
-
-        # put_image(afterbucket, local_after_path, local_after_path, client, logging)
-
-        # response.append(
-        #         {
-        #             "tag":"furniturewall",
-        #             "object_id":uuid_,
-        #         }
-        #     )
     return response
     #
     # else:
@@ -335,6 +446,8 @@ def segment_image_runner(
     #     point_dict = {key: ','.join(','.join(map(str, sublist)) for sublist in value) for key, value in point_dict.items()}
     #
     #     return json.dumps(point_dict, default=str)
+
+
 #
 # @app.post("/mask_points/")
 # async def sagment_image(image_file: UploadFile = File(...),
@@ -370,6 +483,72 @@ def segment_image_runner(
 #         torch.cuda.empty_cache()
 #         logging.error(f'/mask_points HTTP:/500, {e}')
 #         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.post("/segment_image/")
+async def sagment_image(image_file: UploadFile = File(...),
+                        res_mode: str = 'medium'):
+    """
+        Perform computation and instruct pix2pix processing for an image.
+
+    Parameters:
+    - **object_name** (str): The name of the image object.
+    - **prompt** (str): The prompt to use for the controlnet processing.
+    - **res_mode** (str): The resolution mode, tiny: 256, low: 512, medium: 768, high: 1024.
+    - **debug_mode** (bool, optional): If True, returns a streaming response of the processed image for debugging purposes.
+        Defaults to False.
+
+    Returns:
+    - Optional[StreamingResponse]: If debug_mode is True, returns a streaming response containing the processed image.
+        Otherwise, returns None.
+
+    Raises:
+    - Any exceptions raised during image processing or file operations will be propagated.
+
+    **Note:**
+    This function follows the controlnet processing workflow for an image. It retrieves the image file, performs
+    inference using the provided prompt, saves the processed image, and uploads it to the specified output bucket.
+    If debug_mode is enabled, it returns a streaming response of the processed image for debugging purposes.
+
+    """
+
+    try:
+        # Extract filename and separate name and extension
+        filename = image_file.filename
+        base_name, extension = os.path.splitext(filename)
+        im_name = base_name
+        base_name = '/home/kasra/PycharmProjects/reimagine-segmentation/data' + "/" + base_name
+        # Create a directory with the base name of the image
+        if not os.path.exists(base_name):
+            os.makedirs(base_name)
+
+            
+        contents = await image_file.read()
+        image_file = Image.open(BytesIO(contents)).convert("RGB")
+        # Save the image in the created directory
+        image_save_path = os.path.join(base_name, filename)
+        image_file.save(image_save_path)
+        loop = asyncio.get_event_loop()
+        tic = time()
+        response = await loop.run_in_executor(
+            None,
+            segment_image_runner,
+            image_file,
+            res_mode,
+            base_name,
+            im_name,
+        )
+        logging.info(f"time: {time() - tic}")
+
+        logging.info("POST /compute_segment HTTP/1.1 200 OK")
+
+        # if debug_mode:
+        return response
+
+    except Exception as e:
+        torch.cuda.empty_cache()
+        logging.error(f'/compute_segment HTTP:/500, {e}')
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 if __name__ == "__main__":

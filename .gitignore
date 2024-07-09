@@ -302,3 +302,47 @@ poetry.toml
 pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,pycharm
+/setuptools-33.1.1.zip
+/detectron2/
+/demo/
+/.ipynb_checkpoints/
+/.vscode/
+/assets/
+/venv/
+# Ignore all files with specific extensions
+*.log
+*.tmp
+*.bak
+
+# Ignore directories
+node_modules/
+build/
+dist/
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore large files
+path/to/large/file1
+path/to/large/file2
+
+# If you use Jupyter notebooks, you might exclude checkpoints
+.ipynb_checkpoints/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore binary files
+*.bin
+
+# Ignore safetensors files
+*.safetensors
+
+# Ignore PyTorch model files
+*.pth
+*.safetensors
+
+
+
